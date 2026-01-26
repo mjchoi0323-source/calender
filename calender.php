@@ -295,16 +295,19 @@ while ($row = $stmt->fetch()) {
         if (res.success) {
             alert(res.message);
             location.reload(); // 페이지 새로고침하여 달력 갱신
+    // index.php의 saveSchedule 함수 내 일부분
         } else if (res.error_type === 'DUPLICATE') {
-            // 신규 등록(editId 없음) 시에만 이 창이 뜹니다.
-            if(confirm("기존 일정과 겹칩니다. 덮어쓰시겠습니까?")) saveSchedule('overwrite');
+    // res.existing_info에 PHP에서 만든 문자열이 들어옵니다.
+         if(confirm(`겹치는 일정이 있습니다:\n\n${res.existing_info}\n\n기존 일정을 삭제하고 덮어쓰시겠습니까?`)) {
+        saveSchedule('overwrite');
+        }
         } else { 
             alert(res.message); 
         }
     } catch (e) { 
         alert("서버 통신 중 오류가 발생했습니다."); 
     }
-}
+    }
 
         async function deleteSchedule() {
             if(!selectedEventId) return;

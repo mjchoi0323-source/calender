@@ -41,15 +41,16 @@ if ($type === 'M') {
 try {
     $pdo->beginTransaction();
 
-    // [추가 사항] 수정 모드이거나 overwrite 모드일 때 기존 ID 삭제 처리
-    // 14시 -> 12시로 변경 시 기존 14시 일정을 먼저 지워야 중복 체크에 걸리지 않습니다.
-    if ($id && ($mode === 'overwrite' || isset($_POST['id']))) {
+    // [수정/덮어쓰기 대응] 현재 수정 중인 본인 데이터는 중복 체크에서 제외하기 위해 잠시 삭제하거나 
+    // 혹은 아래 중복 체크 쿼리에서 ID를 제외해야 합니다. 여기서는 기존 로직대로 유지하되 
+    // 본인의 ID인 경우 먼저 삭제 처리합니다.
+    if ($id) {
         $deleteCurrentSql = "DELETE FROM user_schedules WHERE id = :id";
         $deleteCurrentStmt = $pdo->prepare($deleteCurrentSql);
         $deleteCurrentStmt->execute([':id' => $id]);
     }
 
-    // 4. 중복된 일정 체크 (현재 등록하려는 시간과 겹치는 다른 일정이 있는지 확인)
+    // 4. 중복된 일정 체크
     $checkSql = "SELECT id, schedule_type, start_time, end_time, plan_note FROM user_schedules 
                  WHERE schedule_date = :date 
                  AND (
@@ -68,13 +69,22 @@ try {
     
     $duplicates = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // 중복이 있고, 강제 덮어쓰기 모드가 아닌 경우
+    // [중요 수정] 중복이 있고, 강제 덮어쓰기(overwrite) 모드가 아닌 경우
     if (count($duplicates) > 0 && $mode !== 'overwrite') {
         $pdo->rollBack();
+
+        // 중복된 일정 내용을 읽기 쉬운 텍스트로 변환
+        $info_list = [];
+        foreach ($duplicates as $dup) {
+            $time_info = ($dup['schedule_type'] === 'OFF') ? "전일" : substr($dup['start_time'], 0, 5) . "~" . substr($dup['end_time'], 0, 5);
+            $info_list[] = "- 타입: {$dup['schedule_type']} ({$time_info})\n  내용: {$dup['plan_note']}";
+        }
+        $existing_info = implode("\n", $info_list);
+
         echo json_encode([
             'success' => false, 
             'error_type' => 'DUPLICATE',
-            'duplicate_list' => $duplicates
+            'existing_info' => $existing_info // JS 알림창에 띄울 정보
         ]);
         exit;
     } 
@@ -89,7 +99,6 @@ try {
     }
 
     // 5. 일정 등록 (INSERT)
-    // 수정이든 신규든 기존 것을 지웠으므로 새로 INSERT 합니다.
     $sql = "INSERT INTO user_schedules (schedule_date, schedule_type, start_time, end_time, plan_note) 
             VALUES (:date, :type, :start, :end, :note)";
     $stmt = $pdo->prepare($sql);

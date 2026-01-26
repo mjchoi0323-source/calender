@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>업무 스케줄러 Pro</title>
+    <style>
+        :root { --primary: #4a90e2; --dayoff: #f44336; --etc: #607d8b; }
+        body { font-family: 'Pretendard', -apple-system, sans-serif; display: flex; justify-content: center; padding: 20px; background-color: #f0f2f5; }
+        .container { width: 450px; background: white; padding: 25px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
+        h2 { text-align: center; color: #333; margin-bottom: 20px; }
+        .input-group { margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px; }
+        label { font-weight: bold; font-size: 13px; color: #555; margin-bottom: -5px; }
+        input, select, button { padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; outline: none; background-color: white; }
+        input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 5px rgba(74, 144, 226, 0.2); }
+        #custom-time-container { display: none; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef; flex-direction: column; gap: 10px; }
+        .time-range { display: flex; align-items: center; gap: 8px; }
+        button { background-color: var(--primary); color: white; border: none; cursor: pointer; font-weight: 600; margin-top: 10px; transition: 0.2s; }
+        button:hover { filter: brightness(1.1); }
+        .schedule-list { border-top: 2px solid #f0f0f0; margin-top: 20px; text-align: center; padding-top: 10px; }
+        .view-link { color: var(--primary); text-decoration: none; font-size: 14px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>📅 업무 스케줄 등록</h2>
+    <div class="input-group">
+        <label>날짜 선택</label>
+        <input type="date" id="date-input">
+        
+        <label>근무/스케줄 타입</label>
+        <select id="type-select" onchange="toggleCustomTime()">
+            <option value="M">M (오전) | 07:00 - 15:30</option>
+            <option value="K">K (오후) | 13:00 - 21:30</option>
+            <option value="A">A (통상) | 10:00 - 18:30</option>
+            <option value="OFF">Day Off (휴무)</option>
+            <option value="ETC">기타 (시간 직접 선택)</option>
+        </select>
+
+        <div id="custom-time-container">
+            <label>근무 시간 설정</label>
+            <div class="time-range">
+                <select id="start-hour"></select> : <select id="start-min"></select>
+                <span>~</span>
+                <select id="end-hour"></select> : <select id="end-min"></select>
+            </div>
+        </div>
+        
+        <label>계획 및 메모</label>
+        <input type="text" id="plan-input" placeholder="근무 시에는 필수 입력 사항입니다.">
+        <button onclick="addSchedule()">스케줄 추가</button>
+    </div>
+    <div class="schedule-list">
+        <a href="calender.php" class="view-link">전체 달력 보기 →</a>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        initTimeOptions();
+
+        const dateInput = document.getElementById('date-input');
+        const urlParams = new URLSearchParams(window.location.search);
+        const paramDate = urlParams.get('date');
+        const paramTime = urlParams.get('time'); // 주간 보기에서 클릭 시 넘어오는 시간
+
+        if (paramDate) {
+            dateInput.value = paramDate;
+        } else {
+            dateInput.valueAsDate = new Date();
+        }
+
+        // 주간 보기에서 시간을 클릭해서 넘어온 경우 처리
+        if (paramTime) {
+            const [h, m] = paramTime.split(':');
+            document.getElementById('type-select').value = 'ETC';
+            toggleCustomTime();
+            document.getElementById('start-hour').value = h;
+            document.getElementById('start-min').value = m;
+            // 기본 종료 시간은 시작 시간 + 1시간으로 세팅
+            let endH = (parseInt(h) + 1).toString().padStart(2, '0');
+            if(endH === "24") endH = "23"; 
+            document.getElementById('end-hour').value = endH;
+            document.getElementById('end-min').value = m;
+        }
+    });
+
+    function initTimeOptions() {
+        const hours = [document.getElementById('start-hour'), document.getElementById('end-hour')];
+        const mins = [document.getElementById('start-min'), document.getElementById('end-min')];
+        hours.forEach(s => { for(let i=0; i<24; i++) s.add(new Option(i.toString().padStart(2,'0'), i.toString().padStart(2,'0'))); });
+        mins.forEach(s => { for(let i=0; i<60; i+=5) s.add(new Option(i.toString().padStart(2,'0'), i.toString().padStart(2,'0'))); });
+    }
+
+    function toggleCustomTime() {
+        document.getElementById('custom-time-container').style.display = (document.getElementById('type-select').value === 'ETC') ? 'flex' : 'none';
+    }
+
+    async function addSchedule(mode = null) {
+        const date = document.getElementById('date-input').value;
+        const type = document.getElementById('type-select').value;
+        let plan = document.getElementById('plan-input').value.trim();
+        if (!date) { alert("날짜를 선택해주세요!"); return; }
+
+        const formData = new FormData();
+        formData.append('schedule_date', date);
+        formData.append('schedule_type', type);
+        formData.append('plan_note', plan || (type === 'OFF' ? '휴무' : ''));
+        if(mode) formData.append('mode', mode);
+
+        if (type === 'ETC') {
+            const startTime = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value + ":00";
+            const endTime = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value + ":00";
+            if (startTime >= endTime) { alert("시간 설정을 확인해주세요."); return; }
+            formData.append('start_time', startTime);
+            formData.append('end_time', endTime);
+        }
+
+        try {
+            const resp = await fetch('minjun_input.php', { method: 'POST', body: formData });
+            const res = await resp.json();
+            if (res.success) {
+                alert(res.message);
+                location.href = 'calender.php?date=' + date;
+            } else if (res.error_type === 'DUPLICATE') {
+                let listMsg = "⚠️ 기존 일정과 겹칩니다:\n";
+                res.duplicate_list.forEach((item, idx) => {
+                    listMsg += `${idx+1}. [${item.schedule_type}] ${item.plan_note}\n`;
+                });
+                if (confirm(listMsg + "\n덮어쓰시겠습니까?")) addSchedule('overwrite');
+            } else { alert("실패: " + res.message); }
+        } catch (e) { alert("통신 에러"); }
+    }
+</script>
+</body>
+</html>

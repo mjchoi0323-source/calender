@@ -336,7 +336,7 @@ while ($row = $stmt->fetch()) {
                 // 신규 등록일 때는 바로 실행
                 saveSchedule();
                 }
-            }
+            }     
     </script>
 </body>
 </html>

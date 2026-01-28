@@ -173,10 +173,21 @@ while ($row = $stmt->fetch()) {
             viewModal = new bootstrap.Modal(document.getElementById('viewModal'));
             initTimeOptions();
 
+            // [추가] 마지막에 보던 뷰(Month/Week) 불러오기
+            const savedView = localStorage.getItem('lastView') || 'dayGridMonth';
+
             calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
-                initialView: 'dayGridMonth',
+                initialView: savedView, 
                 locale: 'ko',
-                headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek' },
+                headerToolbar: { 
+                    left: 'prev,next today', 
+                    center: 'title', 
+                    right: 'dayGridMonth,timeGridWeek' 
+                },
+                // [추가] 사용자가 뷰를 바꿀 때마다 로컬 스토리지에 저장
+                datesSet: function(info) {
+                    localStorage.setItem('lastView', info.view.type);
+                },
                 events: <?php echo json_encode($events); ?>,
                 dateClick: function(info) {
                     resetModal();
@@ -192,7 +203,7 @@ while ($row = $stmt->fetch()) {
                 },
                 eventClick: function(info) {
                     const event = info.event;
-                    selectedEventId = event.id; // 삭제/수정을 위해 ID 저장
+                    selectedEventId = event.id;
                     const props = event.extendedProps;
                     
                     document.getElementById('view-date').innerText = props.raw_date;
@@ -252,62 +263,63 @@ while ($row = $stmt->fetch()) {
             scheduleModal.show();
         }
 
-        // 수정 시 "수정하시겠습니까?" 확인창 추가
         function confirmAndSave() {
             const editId = document.getElementById('edit-id').value;
             if (editId) {
-                if (!confirm("이 일정을 수정하시겠습니까?")) return;
+                if (confirm("이 일정을 수정하시겠습니까?")) {
+                    saveSchedule();
+                }
+            } else {
+                saveSchedule();
             }
-            saveSchedule();
         }
 
         async function saveSchedule(mode = null) {
-    const editId = document.getElementById('edit-id').value;
-    const type = document.getElementById('type-select').value;
-    const date = document.getElementById('date-input').value;
-    
-    const formData = new FormData();
-    formData.append('schedule_date', date);
-    formData.append('schedule_type', type);
-    formData.append('plan_note', document.getElementById('plan-input').value);
+            const editId = document.getElementById('edit-id').value;
+            const type = document.getElementById('type-select').value;
+            const date = document.getElementById('date-input').value;
+            
+            const formData = new FormData();
+            formData.append('schedule_date', date);
+            formData.append('schedule_type', type);
+            formData.append('plan_note', document.getElementById('plan-input').value);
 
-    // 수정 모드(editId 존재)일 때는 중복 체크를 건너뛰고 
-    // 기존 것을 삭제 후 재등록하도록 'overwrite' 모드를 강제 지정합니다.
-    if (editId) {
-        formData.append('id', editId);
-        formData.append('mode', 'overwrite'); 
-    } else if (mode) {
-        // 신규 등록 시 중복 확인 후 사용자가 덮어쓰기를 선택한 경우
-        formData.append('mode', mode);
-    }
+            // 수정 모드일 때 ID 전달
+            if (editId) {
+                formData.append('id', editId);
+            }
 
-    if (type === 'ETC') {
-        const sTime = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value + ":00";
-        const eTime = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value + ":00";
-        formData.append('start_time', sTime);
-        formData.append('end_time', eTime);
-    }
+            // 덮어쓰기 모드 전달
+            if (mode === 'overwrite') {
+                formData.append('mode', 'overwrite');
+            }
 
-    try {
-        const resp = await fetch('minjun_input.php', { method: 'POST', body: formData });
-        const res = await resp.json();
-        
-        if (res.success) {
-            alert(res.message);
-            location.reload(); // 페이지 새로고침하여 달력 갱신
-    // index.php의 saveSchedule 함수 내 일부분
-        } else if (res.error_type === 'DUPLICATE') {
-    // res.existing_info에 PHP에서 만든 문자열이 들어옵니다.
-         if(confirm(`겹치는 일정이 있습니다:\n\n${res.existing_info}\n\n기존 일정을 삭제하고 덮어쓰시겠습니까?`)) {
-        saveSchedule('overwrite');
+            if (type === 'ETC') {
+                const sTime = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value + ":00";
+                const eTime = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value + ":00";
+                formData.append('start_time', sTime);
+                formData.append('end_time', eTime);
+            }
+
+            try {
+                const resp = await fetch('minjun_input.php', { method: 'POST', body: formData });
+                const res = await resp.json();
+                
+                if (res.success) {
+                    alert(res.message);
+                    location.reload(); // 새로고침해도 lastView 로직 덕분에 week가 유지됩니다.
+                } else if (res.error_type === 'DUPLICATE') {
+                    // [핵심] 중복된 일정 정보를 사용자에게 보여줍니다.
+                    if(confirm(`겹치는 일정이 있습니다:\n\n${res.existing_info}\n\n기존 일정을 지우고 덮어쓰시겠습니까?`)) {
+                        saveSchedule('overwrite');
+                    }
+                } else { 
+                    alert(res.message); 
+                }
+            } catch (e) { 
+                alert("서버 통신 중 오류가 발생했습니다."); 
+            }
         }
-        } else { 
-            alert(res.message); 
-        }
-    } catch (e) { 
-        alert("서버 통신 중 오류가 발생했습니다."); 
-    }
-    }
 
         async function deleteSchedule() {
             if(!selectedEventId) return;
@@ -321,25 +333,11 @@ while ($row = $stmt->fetch()) {
                 const res = await resp.json();
                 if(res.success) {
                     viewModal.hide();
-                    calendar.getEventById(selectedEventId).remove();
                     alert("삭제되었습니다.");
+                    location.reload(); // 삭제 후에도 뷰 유지를 위해 reload
                 } else { alert("삭제 실패: " + res.message); }
             } catch (e) { alert("삭제 처리 중 에러가 발생했습니다."); }
         }
-
-            function confirmAndSave() {
-            const editId = document.getElementById('edit-id').value;
-            
-                    if (editId) {
-                // 수정일 때만 질문
-                    if (confirm("이 일정을 수정하시겠습니까?")) {
-                    saveSchedule();
-                }
-                } else {
-                // 신규 등록일 때는 바로 실행
-                saveSchedule();
-                }
-            }     
     </script>
 </body>
 </html>

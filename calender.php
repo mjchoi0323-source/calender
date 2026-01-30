@@ -1,4 +1,13 @@
 <?php
+// [변경점] 세션 시작 및 로그인 체크
+session_start();
+if (!isset($_SESSION['user_idx'])) {
+    header("Location: login.php");
+    exit;
+}
+$user_idx = $_SESSION['user_idx'];
+$user_name = $_SESSION['user_name'] ?? '사용자'; 
+
 // 1. DB 연결
 try {
     require_once 'db_connect.php';
@@ -6,9 +15,12 @@ try {
     die("DB 연결 실패: " . $e->getMessage());
 }
 
-// 2. DB 데이터 가져오기
-$sql = "SELECT id, schedule_date, schedule_type, start_time, end_time, plan_note FROM user_schedules";
-$stmt = $pdo->query($sql);
+// 2. 로그인한 사용자의 일정만 가져오기
+$sql = "SELECT id, schedule_date, schedule_type, start_time, end_time, plan_note 
+        FROM user_schedules 
+        WHERE user_idx = :user_idx";
+$stmt = $pdo->prepare($sql);
+$stmt->execute([':user_idx' => $user_idx]);
 $events = [];
 
 while ($row = $stmt->fetch()) {
@@ -72,9 +84,18 @@ while ($row = $stmt->fetch()) {
         #custom-time-container { display: none; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef; }
         .view-label { font-weight: bold; color: #555; font-size: 14px; margin-bottom: 5px; display: block; }
         .view-value { padding: 10px 12px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; min-height: 45px; display: flex; align-items: center; }
+        .user-header { max-width: 1000px; margin: 0 auto 10px; display: flex; justify-content: space-between; align-items: center; }
     </style>
 </head>
 <body>
+
+    <div class="user-header">
+        <div><strong><?php echo htmlspecialchars($user_name); ?></strong> 님 환영합니다.</div>
+        <div>
+            <a href="profile_edit.php" class="btn btn-sm btn-outline-primary me-1">내 정보 수정</a>
+            <a href="logout.php" class="btn btn-sm btn-outline-secondary">로그아웃</a>
+        </div>
+    </div>
 
     <div id="calendar-container">
         <h3 class="text-center mb-4">📅 나의 업무 스케줄</h3>
@@ -173,7 +194,6 @@ while ($row = $stmt->fetch()) {
             viewModal = new bootstrap.Modal(document.getElementById('viewModal'));
             initTimeOptions();
 
-            // [추가] 마지막에 보던 뷰(Month/Week) 불러오기
             const savedView = localStorage.getItem('lastView') || 'dayGridMonth';
 
             calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
@@ -184,7 +204,6 @@ while ($row = $stmt->fetch()) {
                     center: 'title', 
                     right: 'dayGridMonth,timeGridWeek' 
                 },
-                // [추가] 사용자가 뷰를 바꿀 때마다 로컬 스토리지에 저장
                 datesSet: function(info) {
                     localStorage.setItem('lastView', info.view.type);
                 },
@@ -284,15 +303,8 @@ while ($row = $stmt->fetch()) {
             formData.append('schedule_type', type);
             formData.append('plan_note', document.getElementById('plan-input').value);
 
-            // 수정 모드일 때 ID 전달
-            if (editId) {
-                formData.append('id', editId);
-            }
-
-            // 덮어쓰기 모드 전달
-            if (mode === 'overwrite') {
-                formData.append('mode', 'overwrite');
-            }
+            if (editId) formData.append('id', editId);
+            if (mode === 'overwrite') formData.append('mode', 'overwrite');
 
             if (type === 'ETC') {
                 const sTime = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value + ":00";
@@ -307,9 +319,8 @@ while ($row = $stmt->fetch()) {
                 
                 if (res.success) {
                     alert(res.message);
-                    location.reload(); // 새로고침해도 lastView 로직 덕분에 week가 유지됩니다.
+                    location.reload();
                 } else if (res.error_type === 'DUPLICATE') {
-                    // [핵심] 중복된 일정 정보를 사용자에게 보여줍니다.
                     if(confirm(`겹치는 일정이 있습니다:\n\n${res.existing_info}\n\n기존 일정을 지우고 덮어쓰시겠습니까?`)) {
                         saveSchedule('overwrite');
                     }
@@ -334,7 +345,7 @@ while ($row = $stmt->fetch()) {
                 if(res.success) {
                     viewModal.hide();
                     alert("삭제되었습니다.");
-                    location.reload(); // 삭제 후에도 뷰 유지를 위해 reload
+                    location.reload();
                 } else { alert("삭제 실패: " + res.message); }
             } catch (e) { alert("삭제 처리 중 에러가 발생했습니다."); }
         }

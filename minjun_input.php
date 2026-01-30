@@ -1,126 +1,103 @@
 <?php
-// minjun_input.php
-header('Content-Type: application/json; charset=utf-8');
+session_start();
+header('Content-Type: application/json');
 
 // 1. DB 연결
 try {
-    require_once 'db_connect.php'; 
+    require_once 'db_connect.php';
 } catch (Exception $e) {
-    echo json_encode(['success' => false, 'message' => 'DB 연결 실패']);
+    echo json_encode(['success' => false, 'message' => 'DB 연결 실패: ' . $e->getMessage()]);
     exit;
 }
 
-// 2. POST 데이터 수신
-$id        = $_POST['id'] ?? null; // 수정 시 전달받는 기존 일정 ID
-$date      = $_POST['schedule_date'] ?? null;
-$type      = $_POST['schedule_type'] ?? null;
-$startTime = $_POST['start_time'] ?? null;
-$endTime   = $_POST['end_time'] ?? null;
-$note      = $_POST['plan_note'] ?? '';
-$mode      = $_POST['mode'] ?? null; 
-
-if (!$date || !$type) {
-    echo json_encode(['success' => false, 'message' => '필수 데이터가 누락되었습니다.']);
+// 2. 로그인 체크
+if (!isset($_SESSION['user_idx'])) {
+    echo json_encode(['success' => false, 'message' => '로그인이 필요합니다.']);
     exit;
 }
 
-// 3. 타입별 실제 비교 시간 계산
-$calcStart = $startTime;
-$calcEnd   = $endTime;
+$user_idx = $_SESSION['user_idx'];
+$id = $_POST['id'] ?? null;
+$date = $_POST['schedule_date'];
+$type = $_POST['schedule_type'];
+$note = $_POST['plan_note'] ?? '';
+$mode = $_POST['mode'] ?? '';
 
-if ($type === 'M') { 
-    $calcStart = '07:00:00'; $calcEnd = '15:30:00'; 
-} else if ($type === 'K') { 
-    $calcStart = '13:00:00'; $calcEnd = '21:30:00'; 
-} else if ($type === 'A') { 
-    $calcStart = '10:00:00'; $calcEnd = '18:30:00'; 
-} else if ($type === 'OFF') { 
-    $calcStart = '00:00:00'; $calcEnd = '23:59:59'; 
-}
+// 시간 설정
+$start_time = ($type === 'ETC') ? ($_POST['start_time'] ?? null) : null;
+$end_time = ($type === 'ETC') ? ($_POST['end_time'] ?? null) : null;
 
 try {
-    $pdo->beginTransaction();
+    // --- [중복 체크 로직 수정] ---
+    // 신규 등록 시, '날짜'뿐만 아니라 '타입'과 '시작 시간'까지 똑같은 일정이 있는지 확인
+    if (!$id && $mode !== 'overwrite') {
+        $checkSql = "SELECT plan_note FROM user_schedules 
+                    WHERE user_idx = :user_idx 
+                    AND schedule_date = :date 
+                    AND schedule_type = :type";
+        
+        $checkParams = [':user_idx' => $user_idx, ':date' => $date, ':type' => $type];
 
-    // [수정/덮어쓰기 대응] 현재 수정 중인 본인 데이터는 중복 체크에서 제외하기 위해 잠시 삭제하거나 
-    // 혹은 아래 중복 체크 쿼리에서 ID를 제외해야 합니다. 여기서는 기존 로직대로 유지하되 
-    // 본인의 ID인 경우 먼저 삭제 처리합니다.
+        // ETC 타입인 경우 시작 시간까지 체크해서 다른 시간이면 중복으로 안 치게 함
+        if ($type === 'ETC') {
+            $checkSql .= " AND start_time = :st";
+            $checkParams[':st'] = $start_time;
+        }
+
+        $checkStmt = $pdo->prepare($checkSql);
+        $checkStmt->execute($checkParams);
+        
+        if ($row = $checkStmt->fetch()) {
+            echo json_encode([
+                'success' => false, 
+                'error_type' => 'DUPLICATE', 
+                'existing_info' => $row['plan_note']
+            ]);
+            exit;
+        }
+    }
+
     if ($id) {
-        $deleteCurrentSql = "DELETE FROM user_schedules WHERE id = :id";
-        $deleteCurrentStmt = $pdo->prepare($deleteCurrentSql);
-        $deleteCurrentStmt->execute([':id' => $id]);
-    }
-
-    // 4. 중복된 일정 체크
-    $checkSql = "SELECT id, schedule_type, start_time, end_time, plan_note FROM user_schedules 
-                 WHERE schedule_date = :date 
-                 AND (
-                    (start_time < :new_end AND end_time > :new_start)
-                    OR (schedule_type = 'OFF') 
-                    OR (:type = 'OFF')
-                 )";
-    
-    $checkStmt = $pdo->prepare($checkSql);
-    $checkStmt->execute([
-        ':date' => $date,
-        ':new_start' => $calcStart,
-        ':new_end' => $calcEnd,
-        ':type' => $type
-    ]);
-    
-    $duplicates = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // [중요 수정] 중복이 있고, 강제 덮어쓰기(overwrite) 모드가 아닌 경우
-    if (count($duplicates) > 0 && $mode !== 'overwrite') {
-        $pdo->rollBack();
-
-        // 중복된 일정 내용을 읽기 쉬운 텍스트로 변환
-        $info_list = [];
-        foreach ($duplicates as $dup) {
-            $time_info = ($dup['schedule_type'] === 'OFF') ? "전일" : substr($dup['start_time'], 0, 5) . "~" . substr($dup['end_time'], 0, 5);
-            $info_list[] = "- 타입: {$dup['schedule_type']} ({$time_info})\n  내용: {$dup['plan_note']}";
-        }
-        $existing_info = implode("\n", $info_list);
-
-        echo json_encode([
-            'success' => false, 
-            'error_type' => 'DUPLICATE',
-            'existing_info' => $existing_info // JS 알림창에 띄울 정보
+        // --- [수정 모드] ---
+        $sql = "UPDATE user_schedules 
+                SET schedule_date = :date, 
+                    schedule_type = :type, 
+                    start_time = :st, 
+                    end_time = :et, 
+                    plan_note = :note 
+                WHERE id = :id AND user_idx = :user_idx";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':date' => $date, ':type' => $type, ':st' => $start_time, 
+            ':et' => $end_time, ':note' => $note, ':id' => $id, ':user_idx' => $user_idx
         ]);
-        exit;
-    } 
-    
-    // 덮어쓰기 모드라면 겹치는 다른 일정들도 삭제
-    if (count($duplicates) > 0 && $mode === 'overwrite') {
-        foreach ($duplicates as $dup) {
-            $delSql = "DELETE FROM user_schedules WHERE id = :dup_id";
-            $delStmt = $pdo->prepare($delSql);
-            $delStmt->execute([':dup_id' => $dup['id']]);
+        $msg = "일정이 수정되었습니다.";
+    } else {
+        // --- [신규 등록 모드] ---
+        // 덮어쓰기 시에도 '해당 날짜의 동일한 타입/시간'만 삭제하도록 수정
+        if ($mode === 'overwrite') {
+            $delSql = "DELETE FROM user_schedules WHERE user_idx = :user_idx AND schedule_date = :date AND schedule_type = :type";
+            $delParams = [':user_idx' => $user_idx, ':date' => $date, ':type' => $type];
+            if ($type === 'ETC') {
+                $delSql .= " AND start_time = :st";
+                $delParams[':st'] = $start_time;
+            }
+            $pdo->prepare($delSql)->execute($delParams);
         }
+
+        $sql = "INSERT INTO user_schedules (user_idx, schedule_date, schedule_type, start_time, end_time, plan_note) 
+                VALUES (:user_idx, :date, :type, :st, :et, :note)";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':user_idx' => $user_idx, ':date' => $date, ':type' => $type, 
+            ':st' => $start_time, ':et' => $end_time, ':note' => $note
+        ]);
+        $msg = "새 일정이 등록되었습니다.";
     }
 
-    // 5. 일정 등록 (INSERT)
-    $sql = "INSERT INTO user_schedules (schedule_date, schedule_type, start_time, end_time, plan_note) 
-            VALUES (:date, :type, :start, :end, :note)";
-    $stmt = $pdo->prepare($sql);
-    
-    $finalStart = ($type === 'OFF') ? null : $calcStart;
-    $finalEnd   = ($type === 'OFF') ? null : $calcEnd;
-
-    $stmt->execute([
-        ':date' => $date,
-        ':type' => $type,
-        ':start' => $finalStart,
-        ':end' => $finalEnd,
-        ':note' => $note
-    ]);
-
-    $pdo->commit();
-    
-    $msg = ($id) ? '일정이 성공적으로 수정되었습니다.' : '일정이 성공적으로 등록되었습니다.';
     echo json_encode(['success' => true, 'message' => $msg]);
 
-} catch (PDOException $e) {
-    if ($pdo->inTransaction()) $pdo->rollBack();
-    echo json_encode(['success' => false, 'message' => 'DB 오류: ' . $e->getMessage()]);
+} catch (Exception $e) {
+    echo json_encode(['success' => false, 'message' => '데이터 저장 오류: ' . $e->getMessage()]);
 }
 ?>

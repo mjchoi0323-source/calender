@@ -349,6 +349,75 @@ while ($row = $stmt->fetch()) {
                 } else { alert("삭제 실패: " + res.message); }
             } catch (e) { alert("삭제 처리 중 에러가 발생했습니다."); }
         }
+        
+    function confirmAndSave() {
+            const editId = document.getElementById('edit-id').value;
+            const planInput = document.getElementById('plan-input').value.trim();
+
+            // 메모가 비어있는지 체크
+            if (!planInput) {
+                alert("계획 및 메모를 입력해주세요. 메모 없이는 일정을 저장할 수 없습니다.");
+                document.getElementById('plan-input').focus();
+                return;
+            }
+
+            if (editId) {
+                if (confirm("이 일정을 수정하시겠습니까?")) {
+                    saveSchedule();
+                }
+            } else {
+                saveSchedule();
+            }
+        }
+
+        // [수정] 2. 일정 중복 시 상세 정보 확인 후 덮어쓰기 로직
+        async function saveSchedule(mode = null) {
+            const editId = document.getElementById('edit-id').value;
+            const type = document.getElementById('type-select').value;
+            const date = document.getElementById('date-input').value;
+            const planNote = document.getElementById('plan-input').value;
+            
+            const formData = new FormData();
+            formData.append('schedule_date', date);
+            formData.append('schedule_type', type);
+            formData.append('plan_note', planNote);
+
+            if (editId) formData.append('id', editId);
+            if (mode === 'overwrite') formData.append('mode', 'overwrite');
+
+            if (type === 'ETC') {
+                const sTime = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value + ":00";
+                const eTime = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value + ":00";
+                formData.append('start_time', sTime);
+                formData.append('end_time', eTime);
+            }
+
+            try {
+                const resp = await fetch('minjun_input.php', { method: 'POST', body: formData });
+                const res = await resp.json();
+                
+                if (res.success) {
+                    alert(res.message);
+                    location.reload();
+                } 
+                // [변경 포인트] 중복 시 상세 정보를 보여주고 덮어쓰기 여부 확인
+                else if (res.error_type === 'DUPLICATE') {
+                    // 서버(minjun_input.php)에서 보내주는 res.existing_info를 활용합니다.
+                    const confirmMsg = `해당 날짜에 이미 일정이 존재합니다.\n\n` +
+                                     `[기존 일정 정보]\n${res.existing_info}\n\n` +
+                                     `기존 일정을 삭제하고 현재 내용으로 덮어쓰시겠습니까?`;
+                    
+                    if(confirm(confirmMsg)) {
+                        saveSchedule('overwrite'); // mode를 overwrite로 설정하여 재전송
+                    }
+                } else { 
+                    alert(res.message); 
+                }
+            } catch (e) { 
+                alert("서버 통신 중 오류가 발생했습니다."); 
+            }
+        }
+
     </script>
 </body>
 </html>

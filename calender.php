@@ -1,5 +1,5 @@
 <?php
-// [변경점] 세션 시작 및 로그인 체크
+// 세션 시작 및 로그인 체크
 session_start();
 if (!isset($_SESSION['user_idx'])) {
     header("Location: login.php");
@@ -15,7 +15,24 @@ try {
     die("DB 연결 실패: " . $e->getMessage());
 }
 
-// 2. 로그인한 사용자의 일정만 가져오기
+// [추가] 2. 사용자의 커스텀 시간 설정 가져오기
+$user_times = [
+    'M' => ['start' => '07:00', 'end' => '15:30'], // 기본값
+    'A' => ['start' => '10:00', 'end' => '18:30'],
+    'K' => ['start' => '13:00', 'end' => '21:30']
+];
+
+$timeSql = "SELECT time_type, start_time, end_time FROM user_time_settings WHERE user_idx = :idx";
+$timeStmt = $pdo->prepare($timeSql);
+$timeStmt->execute([':idx' => $user_idx]);
+while ($row = $timeStmt->fetch()) {
+    $user_times[$row['time_type']] = [
+        'start' => substr($row['start_time'], 0, 5),
+        'end'   => substr($row['end_time'], 0, 5)
+    ];
+}
+
+// 3. 로그인한 사용자의 일정만 가져오기
 $sql = "SELECT id, schedule_date, schedule_type, start_time, end_time, plan_note 
         FROM user_schedules 
         WHERE user_idx = :user_idx";
@@ -23,6 +40,7 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute([':user_idx' => $user_idx]);
 $events = [];
 
+// ... 상단 PHP 루프 부분 수정 ...
 while ($row = $stmt->fetch()) {
     $type = $row['schedule_type'];
     $title = "[" . $type . "] " . $row['plan_note'];
@@ -33,25 +51,24 @@ while ($row = $stmt->fetch()) {
     else if ($type === 'A') $color = '#2196f3';
     else if ($type === 'OFF') $color = '#f44336';
 
-    $start = $row['schedule_date'];
-    $end = $row['schedule_date'];
+    $start_date = $row['schedule_date'];
+    $end_date = $row['schedule_date'];
 
-    if ($type === 'M') {
-        $start .= 'T07:00:00'; $end .= 'T15:30:00';
-    } else if ($type === 'K') {
-        $start .= 'T13:00:00'; $end .= 'T21:30:00';
-    } else if ($type === 'A') {
-        $start .= 'T10:00:00'; $end .= 'T18:30:00';
-    } else if ($type === 'ETC' && $row['start_time']) {
-        $start .= 'T' . $row['start_time'];
-        $end .= 'T' . $row['end_time'];
-    } 
+    // [중요 수정] 설정값을 참조하지 않고, DB에 저장된 시간을 그대로 사용합니다.
+    // 이렇게 해야 나중에 설정을 바꿔도 과거 일정이 유지됩니다.
+    if ($row['start_time'] && $row['end_time'] && $type !== 'OFF') {
+        $full_start = $start_date . 'T' . $row['start_time'];
+        $full_end = $end_date . 'T' . $row['end_time'];
+    } else {
+        $full_start = $start_date;
+        $full_end = $end_date;
+    }
 
     $events[] = [
         'id' => $row['id'],
         'title' => $title,
-        'start' => $start,
-        'end' => $end,
+        'start' => $full_start,
+        'end' => $full_end,
         'backgroundColor' => $color,
         'borderColor' => $color,
         'extendedProps' => [
@@ -118,9 +135,9 @@ while ($row = $stmt->fetch()) {
                     <div class="mb-3">
                         <label class="form-label fw-bold">타입 선택</label>
                         <select id="type-select" class="form-select" onchange="toggleCustomTime()">
-                            <option value="M">M (오전) | 07:00 - 15:30</option>
-                            <option value="K">K (오후) | 13:00 - 21:30</option>
-                            <option value="A">A (통상) | 10:00 - 18:30</option>
+                            <option value="M">M (오전)</option>
+                            <option value="A">A (통상)</option>
+                            <option value="K">K (오후)</option>
                             <option value="OFF">Day Off (휴무)</option>
                             <option value="ETC">기타 (시간 직접 선택)</option>
                         </select>
@@ -189,10 +206,15 @@ while ($row = $stmt->fetch()) {
         let scheduleModal, viewModal;
         let selectedEventId = null; 
 
+        // [핵심] PHP에서 설정된 사용자 시간을 JS 객체로 전달
+        const userTimeSettings = <?php echo json_encode($user_times); ?>;
+
         document.addEventListener('DOMContentLoaded', function() {
             scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
             viewModal = new bootstrap.Modal(document.getElementById('viewModal'));
+            
             initTimeOptions();
+            updateSelectLabels(); // 모달 선택지 텍스트 업데이트
 
             const savedView = localStorage.getItem('lastView') || 'dayGridMonth';
 
@@ -211,13 +233,6 @@ while ($row = $stmt->fetch()) {
                 dateClick: function(info) {
                     resetModal();
                     document.getElementById('date-input').value = info.dateStr.split('T')[0];
-                    if(info.dateStr.includes('T')) {
-                        const time = info.dateStr.split('T')[1].substring(0,5);
-                        document.getElementById('type-select').value = 'ETC';
-                        document.getElementById('start-hour').value = time.split(':')[0];
-                        document.getElementById('start-min').value = time.split(':')[1];
-                        toggleCustomTime();
-                    }
                     scheduleModal.show();
                 },
                 eventClick: function(info) {
@@ -232,6 +247,7 @@ while ($row = $stmt->fetch()) {
                     if(props.type === 'OFF') {
                         document.getElementById('view-time').innerText = "휴무";
                     } else {
+                        // FullCalendar event 객체의 start/end를 이용해 시간 표시
                         const fmt = (d) => d.getHours().toString().padStart(2,'0')+":"+d.getMinutes().toString().padStart(2,'0');
                         document.getElementById('view-time').innerText = `${fmt(event.start)} ~ ${fmt(event.end)}`;
                     }
@@ -240,6 +256,16 @@ while ($row = $stmt->fetch()) {
             });
             calendar.render();
         });
+
+        // 모달창의 M, A, K 선택지에 사용자 정의 시간 표시
+        function updateSelectLabels() {
+            const select = document.getElementById('type-select');
+            for(let opt of select.options) {
+                if(userTimeSettings[opt.value]) {
+                    opt.text = `${opt.value} | ${userTimeSettings[opt.value].start} - ${userTimeSettings[opt.value].end}`;
+                }
+            }
+        }
 
         function initTimeOptions() {
             const hSelects = [document.getElementById('start-hour'), document.getElementById('end-hour')];
@@ -284,10 +310,16 @@ while ($row = $stmt->fetch()) {
 
         function confirmAndSave() {
             const editId = document.getElementById('edit-id').value;
+            const planInput = document.getElementById('plan-input').value.trim();
+
+            if (!planInput) {
+                alert("계획 및 메모를 입력해주세요.");
+                document.getElementById('plan-input').focus();
+                return;
+            }
+
             if (editId) {
-                if (confirm("이 일정을 수정하시겠습니까?")) {
-                    saveSchedule();
-                }
+                if (confirm("이 일정을 수정하시겠습니까?")) saveSchedule();
             } else {
                 saveSchedule();
             }
@@ -297,15 +329,17 @@ while ($row = $stmt->fetch()) {
             const editId = document.getElementById('edit-id').value;
             const type = document.getElementById('type-select').value;
             const date = document.getElementById('date-input').value;
+            const planNote = document.getElementById('plan-input').value;
             
             const formData = new FormData();
             formData.append('schedule_date', date);
             formData.append('schedule_type', type);
-            formData.append('plan_note', document.getElementById('plan-input').value);
+            formData.append('plan_note', planNote);
 
             if (editId) formData.append('id', editId);
             if (mode === 'overwrite') formData.append('mode', 'overwrite');
 
+            // ETC일 경우만 직접 선택한 시간 전송, M/A/K는 서버에서 사용자 설정을 참조하여 처리하게 함
             if (type === 'ETC') {
                 const sTime = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value + ":00";
                 const eTime = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value + ":00";
@@ -321,9 +355,8 @@ while ($row = $stmt->fetch()) {
                     alert(res.message);
                     location.reload();
                 } else if (res.error_type === 'DUPLICATE') {
-                    if(confirm(`겹치는 일정이 있습니다:\n\n${res.existing_info}\n\n기존 일정을 지우고 덮어쓰시겠습니까?`)) {
-                        saveSchedule('overwrite');
-                    }
+                    const confirmMsg = `해당 날짜에 이미 일정이 존재합니다.\n\n[기존 일정]\n${res.existing_info}\n\n덮어쓰시겠습니까?`;
+                    if(confirm(confirmMsg)) saveSchedule('overwrite');
                 } else { 
                     alert(res.message); 
                 }
@@ -343,81 +376,11 @@ while ($row = $stmt->fetch()) {
                 const resp = await fetch('delete_schedule.php', { method: 'POST', body: formData });
                 const res = await resp.json();
                 if(res.success) {
-                    viewModal.hide();
                     alert("삭제되었습니다.");
                     location.reload();
                 } else { alert("삭제 실패: " + res.message); }
             } catch (e) { alert("삭제 처리 중 에러가 발생했습니다."); }
         }
-        
-    function confirmAndSave() {
-            const editId = document.getElementById('edit-id').value;
-            const planInput = document.getElementById('plan-input').value.trim();
-
-            // 메모가 비어있는지 체크
-            if (!planInput) {
-                alert("계획 및 메모를 입력해주세요. 메모 없이는 일정을 저장할 수 없습니다.");
-                document.getElementById('plan-input').focus();
-                return;
-            }
-
-            if (editId) {
-                if (confirm("이 일정을 수정하시겠습니까?")) {
-                    saveSchedule();
-                }
-            } else {
-                saveSchedule();
-            }
-        }
-
-        // [수정] 2. 일정 중복 시 상세 정보 확인 후 덮어쓰기 로직
-        async function saveSchedule(mode = null) {
-            const editId = document.getElementById('edit-id').value;
-            const type = document.getElementById('type-select').value;
-            const date = document.getElementById('date-input').value;
-            const planNote = document.getElementById('plan-input').value;
-            
-            const formData = new FormData();
-            formData.append('schedule_date', date);
-            formData.append('schedule_type', type);
-            formData.append('plan_note', planNote);
-
-            if (editId) formData.append('id', editId);
-            if (mode === 'overwrite') formData.append('mode', 'overwrite');
-
-            if (type === 'ETC') {
-                const sTime = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value + ":00";
-                const eTime = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value + ":00";
-                formData.append('start_time', sTime);
-                formData.append('end_time', eTime);
-            }
-
-            try {
-                const resp = await fetch('minjun_input.php', { method: 'POST', body: formData });
-                const res = await resp.json();
-                
-                if (res.success) {
-                    alert(res.message);
-                    location.reload();
-                } 
-                // [변경 포인트] 중복 시 상세 정보를 보여주고 덮어쓰기 여부 확인
-                else if (res.error_type === 'DUPLICATE') {
-                    // 서버(minjun_input.php)에서 보내주는 res.existing_info를 활용합니다.
-                    const confirmMsg = `해당 날짜에 이미 일정이 존재합니다.\n\n` +
-                                     `[기존 일정 정보]\n${res.existing_info}\n\n` +
-                                     `기존 일정을 삭제하고 현재 내용으로 덮어쓰시겠습니까?`;
-                    
-                    if(confirm(confirmMsg)) {
-                        saveSchedule('overwrite'); // mode를 overwrite로 설정하여 재전송
-                    }
-                } else { 
-                    alert(res.message); 
-                }
-            } catch (e) { 
-                alert("서버 통신 중 오류가 발생했습니다."); 
-            }
-        }
-
     </script>
 </body>
 </html>

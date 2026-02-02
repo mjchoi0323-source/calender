@@ -12,6 +12,7 @@ $user_idx = $_SESSION['user_idx'];
 $user_name = $_POST['user_name'] ?? '';
 $email     = $_POST['email'] ?? '';
 $password  = $_POST['password'] ?? '';
+$times     = $_POST['times'] ?? []; // M, A, K 시간 데이터
 
 // 필수 값 검증
 if (!$user_name || !$email) {
@@ -20,7 +21,9 @@ if (!$user_name || !$email) {
 }
 
 try {
-    // 1. 기본 업데이트 SQL (이름, 이메일)
+    $pdo->beginTransaction(); // 여러 테이블 수정을 위해 트랜잭션 시작
+
+    // 1. 기본 정보 업데이트 (이름, 이메일)
     $sql = "UPDATE user_tab SET user_name = :user_name, email = :email";
     $params = [
         ':user_name' => $user_name,
@@ -28,7 +31,7 @@ try {
         ':idx'       => $user_idx
     ];
 
-    // 2. 비밀번호가 입력된 경우 쿼리에 추가
+    // 비밀번호 변경 여부 확인
     if (!empty($password)) {
         $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
         $sql .= ", password = :password";
@@ -36,25 +39,43 @@ try {
     }
 
     $sql .= " WHERE idx = :idx";
-
     $stmt = $pdo->prepare($sql);
-    $result = $stmt->execute($params);
+    $stmt->execute($params);
 
-    if ($result) {
-        // 수정된 이름을 세션에도 반영 (캘린더 상단 표시용)
-        $_SESSION['user_name'] = $user_name;
+    // 2. 시간 설정 업데이트 (M, A, K 루프)
+    if (!empty($times)) {
+        $timeSql = "INSERT INTO user_time_settings (user_idx, time_type, start_time, end_time) 
+                    VALUES (:uid, :type, :start, :end)
+                    ON DUPLICATE KEY UPDATE 
+                    start_time = VALUES(start_time), 
+                    end_time = VALUES(end_time)";
         
-        echo "<script>
-                alert('회원 정보가 성공적으로 수정되었습니다.');
-                location.href = 'calender.php';
-              </script>";
-        exit;
-    } else {
-        echo "<script>alert('정보 수정에 실패했습니다.'); history.back();</script>";
+        $timeStmt = $pdo->prepare($timeSql);
+
+        foreach ($times as $type => $val) {
+            $timeStmt->execute([
+                ':uid'   => $user_idx,
+                ':type'  => $type,
+                ':start' => $val['start'],
+                ':end'   => $val['end']
+            ]);
+        }
     }
 
+    $pdo->commit(); // 모든 변경사항 확정
+
+    // 세션 이름 갱신
+    $_SESSION['user_name'] = $user_name;
+
+    echo "<script>
+            alert('회원 정보 및 시간 설정이 성공적으로 수정되었습니다.');
+            location.href = 'calender.php';
+          </script>";
+    exit;
+
 } catch (PDOException $e) {
+    $pdo->rollBack(); // 오류 발생 시 되돌리기
     $errorMsg = addslashes($e->getMessage());
-    echo "<script>alert('DB 오류가 발생했습니다: $errorMsg'); history.back();</script>";
+    echo "<script>alert('데이터 처리 중 오류가 발생했습니다: $errorMsg'); history.back();</script>";
 }
 ?>

@@ -4,7 +4,6 @@ require_once 'db_connect.php';
 
 header('Content-Type: application/json');
 
-// 로그인 체크
 if (!isset($_SESSION['user_idx'])) {
     echo json_encode(['success' => false, 'message' => '로그인이 필요합니다.']);
     exit;
@@ -12,12 +11,11 @@ if (!isset($_SESSION['user_idx'])) {
 
 $user_idx = $_SESSION['user_idx'];
 
-// 1. POST 데이터 받아오기
 $id = $_POST['id'] ?? null;
 $schedule_date = $_POST['schedule_date'] ?? null;
 $schedule_type = $_POST['schedule_type'] ?? 'M';
 $plan_note = $_POST['plan_note'] ?? '';
-$mode = $_POST['mode'] ?? ''; // 'overwrite' 여부 확인
+$mode = $_POST['mode'] ?? '';
 
 if (!$schedule_date) {
     echo json_encode(['success' => false, 'message' => '날짜를 선택해주세요.']);
@@ -25,7 +23,7 @@ if (!$schedule_date) {
 }
 
 try {
-    // 2. 사용자의 현재 시간 설정(M, A, K) 가져오기
+    // 2. 사용자의 현재 시간 설정 가져오기
     $time_settings = [
         'M' => ['start' => '07:00:00', 'end' => '15:30:00'],
         'A' => ['start' => '10:00:00', 'end' => '18:30:00'],
@@ -41,7 +39,7 @@ try {
         ];
     }
 
-    // 3. 타입에 따른 실제 저장 시간 결정 (이 시점의 시간을 DB에 '박제'함)
+    // 3. 타입에 따른 실제 저장 시간 결정
     $final_start = null;
     $final_end = null;
 
@@ -53,21 +51,50 @@ try {
         $final_end   = $_POST['end_time'] ?? null;
     }
 
-    // 4. 중복 체크 (수정 모드가 아닐 때만 동일 날짜 중복 확인)
-    if (!$id && $mode !== 'overwrite') {
-        $checkSql = "SELECT id, schedule_type, start_time, end_time FROM user_schedules 
-                     WHERE user_idx = :uid AND schedule_date = :sdate LIMIT 1";
-        $checkStmt = $pdo->prepare($checkSql);
-        $checkStmt->execute([':uid' => $user_idx, ':sdate' => $schedule_date]);
-        $existing = $checkStmt->fetch();
+    // 4. [수정] 시간 기반 중복 체크 (다중 일정 대응)
+    if ($final_start && $final_end && $schedule_type !== 'OFF' && $mode !== 'overwrite') {
+        
+        $checkSql = "SELECT id, schedule_type, start_time, end_time, plan_note 
+                     FROM user_schedules 
+                     WHERE user_idx = :uid 
+                       AND schedule_date = :sdate 
+                       AND schedule_type != 'OFF'
+                       AND start_time < :new_end 
+                       AND end_time > :new_start";
+        
+        if ($id) {
+            $checkSql .= " AND id != :id";
+        }
 
-        if ($existing) {
-            $info = "타입: {$existing['schedule_type']} (시간: {$existing['start_time']}~{$existing['end_time']})";
+        $checkStmt = $pdo->prepare($checkSql);
+        $checkParams = [
+            ':uid' => $user_idx, 
+            ':sdate' => $schedule_date, 
+            ':new_start' => $final_start, 
+            ':new_end' => $final_end
+        ];
+        if ($id) $checkParams[':id'] = $id;
+        
+        $checkStmt->execute($checkParams);
+        // fetchAll()을 사용하여 겹치는 모든 일정을 가져옴
+        $existing_rows = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (count($existing_rows) > 0) {
+            $info_list = [];
+            foreach ($existing_rows as $row) {
+                $st = substr($row['start_time'], 0, 5);
+                $et = substr($row['end_time'], 0, 5);
+                $info_list[] = "- [{$row['schedule_type']}] {$st}~{$et} : {$row['plan_note']}";
+            }
+            
+            // 겹치는 일정들을 줄바꿈 문자(\n)로 연결
+            $info_string = implode("\n", $info_list);
+
             echo json_encode([
                 'success' => false, 
                 'error_type' => 'DUPLICATE', 
-                'existing_info' => $info,
-                'message' => '해당 날짜에 이미 일정이 있습니다.'
+                'existing_info' => $info_string,
+                'message' => '입력하신 시간대에 겹치는 일정이 ' . count($existing_rows) . '건 있습니다.'
             ]);
             exit;
         }
@@ -75,7 +102,6 @@ try {
 
     // 5. 저장 실행 (INSERT 또는 UPDATE)
     if ($id) {
-        // 수정 모드
         $sql = "UPDATE user_schedules SET 
                 schedule_date = :sdate, 
                 schedule_type = :stype, 
@@ -95,10 +121,16 @@ try {
         ]);
         $msg = "일정이 수정되었습니다.";
     } else {
-        // 신규 등록 (덮어쓰기 모드 포함)
         if ($mode === 'overwrite') {
-            $pdo->prepare("DELETE FROM user_schedules WHERE user_idx = :uid AND schedule_date = :sdate")
-                ->execute([':uid' => $user_idx, ':sdate' => $schedule_date]);
+            $pdo->prepare("DELETE FROM user_schedules 
+                           WHERE user_idx = :uid AND schedule_date = :sdate 
+                           AND start_time < :new_end AND end_time > :new_start")
+                ->execute([
+                    ':uid' => $user_idx, 
+                    ':sdate' => $schedule_date, 
+                    ':new_start' => $final_start, 
+                    ':new_end' => $final_end
+                ]);
         }
 
         $sql = "INSERT INTO user_schedules (user_idx, schedule_date, schedule_type, start_time, end_time, plan_note) 

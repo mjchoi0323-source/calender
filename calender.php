@@ -117,7 +117,6 @@ foreach ($mobile_events_group as $date => $list) {
         .content-cell-wrapper { width: 65%; display: flex; flex-direction: column; justify-content: center; }
         .event-item-mobile { padding: 12px 15px; cursor: pointer; color: var(--primary); font-weight: bold; font-size: 0.95rem; }
         .empty-cell { padding: 15px; color: #bbb; font-size: 0.9rem; font-style: italic; cursor: pointer; text-align: center; }
-        /* 일별 목록 내 시간 스타일 */
         .list-time-badge { font-size: 0.8rem; color: #666; background: #e9ecef; padding: 2px 6px; border-radius: 4px; font-weight: normal; margin-top: 4px; display: inline-block; }
         .view-label { font-weight: bold; color: #555; font-size: 14px; margin-bottom: 4px; display: block; }
         .view-value { padding: 12px; background: #f8f9fa; border: 1px solid #eee; border-radius: 10px; min-height: 45px; display: flex; align-items: center; }
@@ -298,14 +297,12 @@ foreach ($mobile_events_group as $date => $list) {
                     const btn = document.createElement('button');
                     btn.className = 'list-group-item list-group-item-action py-3 d-flex flex-column align-items-start';
                     
-                    // 시간 텍스트 생성 (OFF면 "휴무", 그외엔 "시작~종료")
                     let timeText = "";
                     if(ev.extendedProps.type === 'OFF') {
                         timeText = "휴무";
                     } else if(ev.extendedProps.raw_start && ev.extendedProps.raw_end) {
                         timeText = `${ev.extendedProps.raw_start} ~ ${ev.extendedProps.raw_end}`;
                     } else {
-                        // DB에서 설정한 기본 시간 가져오기
                         const defaultTime = userTimeSettings[ev.extendedProps.type];
                         if(defaultTime) timeText = `${defaultTime.start} ~ ${defaultTime.end}`;
                         else timeText = "시간 정보 없음";
@@ -351,21 +348,29 @@ foreach ($mobile_events_group as $date => $list) {
 
         async function saveSchedule(mode = null) {
             const planNote = document.getElementById('plan-input').value.trim();
-            if (!planNote) { alert("메모를 입력해주세요."); return; }
+            const scheduleType = document.getElementById('type-select').value;
+            
+            // OFF가 아닐 때만 메모 체크
+            if (scheduleType !== 'OFF' && !planNote) { alert("메모를 입력해주세요."); return; }
+
             const formData = new FormData();
             formData.append('schedule_date', document.getElementById('date-input').value);
-            formData.append('schedule_type', document.getElementById('type-select').value);
+            formData.append('schedule_type', scheduleType);
             formData.append('plan_note', planNote);
             if (document.getElementById('edit-id').value) formData.append('id', document.getElementById('edit-id').value);
             if (mode === 'overwrite') formData.append('mode', 'overwrite');
-            if(document.getElementById('type-select').value === 'ETC') {
+            
+            if(scheduleType === 'ETC') {
                 formData.append('start_time', document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value);
                 formData.append('end_time', document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value);
             }
             try {
                 const resp = await fetch('minjun_input.php', { method: 'POST', body: formData });
                 const res = await resp.json();
-                if (res.success) { alert(res.message); location.reload(); } 
+                if (res.success) { 
+                    alert(res.message); // 여기에 삭제된 일정도 함께 출력됨
+                    location.reload(); 
+                } 
                 else if (res.error_type === 'DUPLICATE') {
                     if(confirm(`겹치는 일정이 있습니다:\n${res.existing_info}\n\n기존 일정을 지우고 덮어쓰시겠습니까?`)) saveSchedule('overwrite');
                 } else alert(res.message);

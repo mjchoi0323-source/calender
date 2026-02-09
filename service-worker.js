@@ -1,4 +1,4 @@
-const CACHE_NAME = 'scheduler-v1';
+const CACHE_NAME = 'scheduler-v2';
 const ASSETS = [
   'index.html',
   'signup.html',

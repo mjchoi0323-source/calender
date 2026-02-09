@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>업무 스케줄러 Pro (Time Check)</title>
+    <title>업무 스케줄러 Pro (Time Conflict Check)</title>
     
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#4a90e2">
@@ -19,6 +19,7 @@
         .user-header-table td { border: 1px solid #000; padding: 12px; font-size: 14px; }
         #calendar-container { max-width: 1000px; margin: 20px auto; background: white; padding: 15px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
         
+        /* 모바일 뷰 스타일 */
         .mobile-list-container { display: none; width: 100%; max-width: 1000px; margin: 0 auto; background: #fff; border: 1px solid #000; }
         .mobile-nav { display: flex; justify-content: space-between; border-bottom: 1px solid #000; padding: 10px 15px; font-weight: bold; background: #fdfdfd; align-items: center; }
         .nav-buttons span { cursor: pointer; padding: 5px 10px; font-size: 1.3rem; }
@@ -139,6 +140,7 @@
     </div>
 
     <script>
+        // 1. 전역 변수 및 DB 초기화
         let db;
         let calendar;
         let currentMonth = new Date();
@@ -169,6 +171,87 @@
             refreshUI();
         }
 
+        // 2. 유틸리티: 시간 문자열을 분(minute)으로 변환
+        function timeToMinutes(timeStr) {
+            if (!timeStr || !timeStr.includes(':')) return -1;
+            const [h, m] = timeStr.split(':').map(Number);
+            return h * 60 + m;
+        }
+
+        // 3. 핵심 기능: 일정 저장 및 시간 중복 체크
+        async function confirmAndSave() {
+            const id = document.getElementById('edit-id').value;
+            const targetDate = document.getElementById('date-input').value;
+            const type = document.getElementById('type-select').value;
+            const planNote = document.getElementById('plan-input').value;
+
+            // 현재 입력하는 일정의 시간대 파악
+            let newStart = "";
+            let newEnd = "";
+            if (type === 'ETC') {
+                newStart = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value;
+                newEnd = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value;
+            } else if (type !== 'OFF') {
+                newStart = userTimeSettings[type].start;
+                newEnd = userTimeSettings[type].end;
+            }
+
+            const newSMin = timeToMinutes(newStart);
+            const newEMin = timeToMinutes(newEnd);
+
+            const tx = db.transaction("schedules", "readwrite");
+            const store = tx.objectStore("schedules");
+
+            store.getAll().onsuccess = (e) => {
+                const allData = e.target.result;
+
+                // 중복 일정 필터링 (같은 날짜, 휴무 아님, 본인 아님, 시간 겹침)
+                const overlaps = allData.filter(ev => {
+                    if (ev.schedule_date !== targetDate || ev.id == id || ev.schedule_type === 'OFF') return false;
+                    
+                    let exStart = ev.start_time || (userTimeSettings[ev.schedule_type] ? userTimeSettings[ev.schedule_type].start : "");
+                    let exEnd = ev.end_time || (userTimeSettings[ev.schedule_type] ? userTimeSettings[ev.schedule_type].end : "");
+
+                    const exSMin = timeToMinutes(exStart);
+                    const exEMin = timeToMinutes(exEnd);
+
+                    return (newSMin < exEMin) && (newEMin > exSMin);
+                });
+
+                // 겹치는 일정이 있다면 정확한 정보 출력 후 확인
+                if (overlaps.length > 0) {
+                    let infoMsg = overlaps.map(o => {
+                        const timeText = getTimeText(o);
+                        return `• [${o.schedule_type}] ${o.plan_note || '메모없음'} (${timeText})`;
+                    }).join('\n');
+
+                    const confirmMsg = `⚠️ 시간대가 겹치는 일정이 존재합니다!\n\n` +
+                                       `[겹치는 일정]\n${infoMsg}\n\n` +
+                                       `기존 일정을 삭제하고 현재 일정으로 덮어쓰시겠습니까?`;
+
+                    if (!confirm(confirmMsg)) return;
+                    overlaps.forEach(o => store.delete(o.id));
+                }
+
+                // 저장 실행
+                const data = {
+                    schedule_date: targetDate,
+                    schedule_type: type,
+                    plan_note: planNote,
+                    start_time: type === 'ETC' ? newStart : "",
+                    end_time: type === 'ETC' ? newEnd : ""
+                };
+                if (id) data.id = Number(id);
+
+                store.put(data);
+                tx.oncomplete = () => {
+                    bootstrap.Modal.getInstance(document.getElementById('scheduleModal')).hide();
+                    refreshUI();
+                };
+            };
+        }
+
+        // 4. UI 갱신 및 캘린더 로직
         function refreshUI() {
             if (calendar) calendar.refetchEvents();
             renderMobileList();
@@ -180,10 +263,9 @@
                 initialView: 'dayGridMonth',
                 locale: 'ko',
                 headerToolbar: { left: 'prev,next today', center: 'title', right: '' },
-                events: async function(info, successCallback) {
+                events: function(info, successCallback) {
                     const tx = db.transaction("schedules", "readonly");
-                    const store = tx.objectStore("schedules");
-                    store.getAll().onsuccess = (e) => {
+                    tx.objectStore("schedules").getAll().onsuccess = (e) => {
                         const events = e.target.result.map(d => ({
                             id: d.id,
                             title: `[${d.schedule_type}] ${d.plan_note}`,
@@ -210,9 +292,8 @@
 
             const lastDay = new Date(year, month + 1, 0).getDate();
             const tx = db.transaction("schedules", "readonly");
-            const store = tx.objectStore("schedules");
             
-            store.getAll().onsuccess = (e) => {
+            tx.objectStore("schedules").getAll().onsuccess = (e) => {
                 const data = e.target.result;
                 for (let i = 1; i <= lastDay; i++) {
                     const dStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
@@ -244,8 +325,7 @@
             listContent.innerHTML = '';
 
             const tx = db.transaction("schedules", "readonly");
-            const store = tx.objectStore("schedules");
-            store.getAll().onsuccess = (e) => {
+            tx.objectStore("schedules").getAll().onsuccess = (e) => {
                 const dayEvents = e.target.result.filter(ev => ev.schedule_date === dateStr);
                 if (dayEvents.length > 0) {
                     dayEvents.forEach(ev => {
@@ -267,93 +347,9 @@
             };
         }
 
-        // --- 시간 기준 중복 체크 로직 ---
-
-        // "HH:mm" 문자열을 분 단위 숫자로 변환
-        function timeToMinutes(timeStr) {
-            if (!timeStr || !timeStr.includes(':')) return -1;
-            const [h, m] = timeStr.split(':').map(Number);
-            return h * 60 + m;
-        }
-
-        async function confirmAndSave() {
-            const id = document.getElementById('edit-id').value;
-            const targetDate = document.getElementById('date-input').value;
-            const type = document.getElementById('type-select').value;
-            
-            // 새 일정의 시작/종료 시간 확정
-            let newStart = "";
-            let newEnd = "";
-
-            if (type === 'ETC') {
-                newStart = document.getElementById('start-hour').value + ":" + document.getElementById('start-min').value;
-                newEnd = document.getElementById('end-hour').value + ":" + document.getElementById('end-min').value;
-            } else if (type !== 'OFF') {
-                newStart = userTimeSettings[type].start;
-                newEnd = userTimeSettings[type].end;
-            }
-
-            const newStartMin = timeToMinutes(newStart);
-            const newEndMin = timeToMinutes(newEnd);
-
-            const tx = db.transaction("schedules", "readwrite");
-            const store = tx.objectStore("schedules");
-
-            store.getAll().onsuccess = (e) => {
-                const allData = e.target.result;
-                
-                // 1. 중복 체크: 날짜가 같고, 시간대가 겹치며, 현재 수정중인 본인이 아닌 일정들
-                const overlaps = allData.filter(ev => {
-                    if (ev.schedule_date !== targetDate || ev.id == id || ev.schedule_type === 'OFF') return false;
-                    
-                    // 기존 일정 시간 구하기
-                    let exStart = ev.start_time;
-                    let exEnd = ev.end_time;
-                    if (!exStart && userTimeSettings[ev.schedule_type]) {
-                        exStart = userTimeSettings[ev.schedule_type].start;
-                        exEnd = userTimeSettings[ev.schedule_type].end;
-                    }
-
-                    const exStartMin = timeToMinutes(exStart);
-                    const exEndMin = timeToMinutes(exEnd);
-
-                    // 시간 겹침 공식: (새시작 < 기존종료) && (새종료 > 기존시작)
-                    if (newStartMin !== -1 && exStartMin !== -1) {
-                        return (newStartMin < exEndMin) && (newEndMin > exStartMin);
-                    }
-                    return false;
-                });
-
-                if (overlaps.length > 0) {
-                    const overlapInfo = overlaps.map(o => `[${o.schedule_type}: ${o.plan_note}]`).join(', ');
-                    const confirmMsg = `입력하신 시간대가 다음 일정과 겹칩니다:\n${overlapInfo}\n\n기존 일정을 삭제하고 덮어쓰시겠습니까?`;
-                    if (!confirm(confirmMsg)) return;
-
-                    // 겹치는 일정들 삭제
-                    overlaps.forEach(o => store.delete(o.id));
-                }
-
-                // 2. 저장
-                const newData = {
-                    schedule_date: targetDate,
-                    schedule_type: type,
-                    plan_note: document.getElementById('plan-input').value,
-                    start_time: type === 'ETC' ? newStart : "",
-                    end_time: type === 'ETC' ? newEnd : ""
-                };
-                if (id) newData.id = Number(id);
-
-                store.put(newData);
-                tx.oncomplete = () => {
-                    bootstrap.Modal.getInstance(document.getElementById('scheduleModal')).hide();
-                    refreshUI();
-                };
-            };
-        }
-
-        // --- 기타 유틸리티 함수 (기존과 동일) ---
-        async function deleteSchedule() {
-            if (!confirm("삭제하시겠습니까?")) return;
+        // 5. 유틸리티 및 기타 모달 제어
+        function deleteSchedule() {
+            if (!confirm("정말 삭제하시겠습니까?")) return;
             const id = Number(document.getElementById('edit-id').value);
             const tx = db.transaction("schedules", "readwrite");
             tx.objectStore("schedules").delete(id);
@@ -363,30 +359,6 @@
             };
         }
 
-        function getEventColor(type) {
-            return {'M':'#4caf50','K':'#ff9800','A':'#2196f3','OFF':'#f44336'}[type] || '#607d8b';
-        }
-        function getTimeText(ev) {
-            if (ev.schedule_type === 'OFF') return "휴무";
-            if (ev.start_time) return `${ev.start_time} ~ ${ev.end_time}`;
-            const def = userTimeSettings[ev.schedule_type];
-            return def && def.start ? `${def.start} ~ ${def.end}` : "시간 정보 없음";
-        }
-        function changeMonth(val) { currentMonth.setMonth(currentMonth.getMonth() + val); refreshUI(); }
-        function goToday() { currentMonth = new Date(); refreshUI(); }
-        function toggleCustomTime() {
-            document.getElementById('custom-time-container').style.display = 
-                (document.getElementById('type-select').value === 'ETC') ? 'block' : 'none';
-        }
-        function openAddModal(date) {
-            document.getElementById('modalTitle').innerText = "새 스케줄 등록";
-            document.getElementById('edit-id').value = '';
-            document.getElementById('date-input').value = date;
-            document.getElementById('plan-input').value = '';
-            document.getElementById('type-select').value = 'M';
-            toggleCustomTime();
-            new bootstrap.Modal(document.getElementById('scheduleModal')).show();
-        }
         function showDetail(ev) {
             document.getElementById('edit-id').value = ev.id;
             document.getElementById('view-date').innerText = ev.schedule_date;
@@ -396,6 +368,7 @@
             bootstrap.Modal.getOrCreateInstance(document.getElementById('dailyListModal')).hide();
             new bootstrap.Modal(document.getElementById('viewModal')).show();
         }
+
         function openEditModal() {
             const currentId = Number(document.getElementById('edit-id').value);
             const tx = db.transaction("schedules", "readonly");
@@ -420,12 +393,43 @@
                 new bootstrap.Modal(document.getElementById('scheduleModal')).show();
             };
         }
+
+        function openAddModal(date) {
+            document.getElementById('modalTitle').innerText = "새 스케줄 등록";
+            document.getElementById('edit-id').value = '';
+            document.getElementById('date-input').value = date;
+            document.getElementById('plan-input').value = '';
+            document.getElementById('type-select').value = 'M';
+            toggleCustomTime();
+            new bootstrap.Modal(document.getElementById('scheduleModal')).show();
+        }
+
+        function toggleCustomTime() {
+            document.getElementById('custom-time-container').style.display = 
+                (document.getElementById('type-select').value === 'ETC') ? 'block' : 'none';
+        }
+
+        function getTimeText(ev) {
+            if (ev.schedule_type === 'OFF') return "휴무";
+            if (ev.start_time) return `${ev.start_time} ~ ${ev.end_time}`;
+            const def = userTimeSettings[ev.schedule_type];
+            return def && def.start ? `${def.start} ~ ${def.end}` : "시간 정보 없음";
+        }
+
+        function getEventColor(type) {
+            return {'M':'#4caf50','K':'#ff9800','A':'#2196f3','OFF':'#f44336'}[type] || '#607d8b';
+        }
+
+        function changeMonth(val) { currentMonth.setMonth(currentMonth.getMonth() + val); refreshUI(); }
+        function goToday() { currentMonth = new Date(); refreshUI(); }
+
         function initTimeSelects() {
             const h = document.querySelectorAll('#start-hour, #end-hour');
             const m = document.querySelectorAll('#start-min, #end-min');
             h.forEach(s => { for(let i=0; i<24; i++) s.add(new Option(String(i).padStart(2,'0'), String(i).padStart(2,'0'))); });
             m.forEach(s => { for(let i=0; i<60; i+=5) s.add(new Option(String(i).padStart(2,'0'), String(i).padStart(2,'0'))); });
         }
+
         function renderTypeSelect() {
             const s = document.getElementById('type-select');
             const types = [
@@ -440,6 +444,7 @@
                 s.add(opt);
             });
         }
+
         function exportData() {
             const tx = db.transaction("schedules", "readonly");
             tx.objectStore("schedules").getAll().onsuccess = (e) => {
